@@ -5,7 +5,7 @@
 ;; Author: Jonas Bernoulli <jonas@bernoul.li>
 ;; Created: 20081202
 ;; Updated: 20110811
-;; Version: 0.7.1
+;; Version: 0.7.1-git (branch: next)
 ;; Homepage: https://github.com/tarsius/elx
 ;; Keywords: docs, libraries, packages
 
@@ -464,6 +464,9 @@ and complain to the respective author."
 
 ;;; Extract People.
 
+;; TODO The address cracking code has been grown organically and should be
+;; rewritten and documented properly instead.
+
 (defcustom elx-remap-names nil
   "List of names that should be replaced or dropped by `elx-crack-address'.
 If function `elx-crack-address' is called with a non-nil SANITIZE argument
@@ -475,9 +478,7 @@ the cadr."
   :type '(repeat (list string (choice (const  :tag "drop" nil)
 				      (string :tag "replacement")))))
 
-(defun elx-crack-address (x)
-  "Split up an email address X into full name and real email address.
-The value is a cons of the form (FULLNAME . ADDRESS)."
+(defun elx-crack-address-1 (x)
   (let (name mail)
     (cond ((string-match (concat "\\(.+\\) "
 				 "?[(<]\\(\\S-+@\\S-+\\)[>)]") x)
@@ -506,6 +507,14 @@ The value is a cons of the form (FULLNAME . ADDRESS)."
 		 mail (match-string 1 x)))
 	  ((string-match "\\S-+@\\S-+" x)
 	   (setq mail x))
+	  ((string-match "\\([^(<[{;]+\\) *\\s(" x)
+	   ;; Everything after the opening parenthesis or semicolon
+	   ;; is likely a web address, obfuscated email or comment.
+	   (setq name (match-string 1 x)))
+	  ((string-match " \\(dot\\|at\\) " x)
+	   ;; We were unable to deciper an obfuscated email but are
+	   ;; pretty sure that there is one, bail.
+	   )
 	  (t
 	   (setq name x)))
     (setq name (and (stringp name)
@@ -526,37 +535,62 @@ The value is a cons of the form (FULLNAME . ADDRESS)."
     (when (or name mail)
       (cons name mail))))
 
+(defun elx-crack-addresses (l)
+  "Split up a string L into a list of full name and real email address pairs.
+The return value has the form ((NAME . ADDRESS)...)."
+  (mapcan (lambda (p)
+	    (setq p (elx-crack-address-1 p))
+	    (when p (list p)))
+	  ;; Commas might seperate different people or a name from
+	  ;; an address.  Parenthesis in most cases indicate that
+	  ;; they are used to enclose the address(es) instead of
+	  ;; comma being used to seperate name from address. If
+	  ;; there is an 'and' of some kind then always separate
+	  ;; there and at commas.
+	  (cond ((string-match "\\(&\\| and \\)" l)
+		 (split-string l "\\(,\\|&\\| and \\)[ \t]+" t))
+		((string-match "\s(" l)
+		 (list l))
+		(t
+		 (split-string l ",[ \t]+" t)))))
+
+(defun elx-crack-address (l)
+  "Split up a string X into full name and real email address.
+The return value has the from (NAME . ADDRESS)."
+  (car (elx-crack-addresses l)))
+
+'(
+  (elx-crack-addresses "Drew Adams, Thierry Volpiatto")
+  (elx-crack-addresses "Matthew L. Fidler, Le Wang & Others")
+  (elx-crack-addresses "Alex Kritikos (my gmail.com username is alex.kritikos)")
+  (elx-crack-addresses "Alex Kritikos (foo@bar.com)")
+
+  (elx-crack-addresses "Drew Adams, Thierry Volpiatto")
+  (elx-crack-address "Drew Adams, Thierry Volpiatto")
+  )
+
 (defun elx-authors (&optional file)
   "Return the author list of file FILE.
 Or the current buffer if FILE is equal to `buffer-file-name' or is nil.
-Each element of the list is a cons; the car is the full name,
-the cdr is an email address."
+The return value has the form ((NAME . ADDRESS)...)."
   (elx-with-file file
-    (mapcan (lambda (elt)
-	      (when elt
-		(setq elt (elx-crack-address elt))
-		(when elt
-		  (list elt))))
+    (mapcan 'elx-crack-addresses
 	    (elx-header-multiline "authors?"))))
 
 (defun elx-maintainer (&optional file)
   "Return the maintainer of file FILE.
 Or the current buffer if FILE is equal to `buffer-file-name' or is nil.
 The return value has the form (NAME . ADDRESS)."
-  (elx-with-file file
-    (let ((maint (elx-header "maintainer")))
-      (if maint
-	  (elx-crack-address maint)
-	(car (elx-authors))))))
+  (or (elx-with-file file
+	(elx-crack-address (or (elx-header "maintainer") "")))
+      (car (elx-authors))))
 
 (defun elx-adapted-by (&optional file)
   "Return the person how adapted file FILE.
 Or the current buffer if FILE is equal to `buffer-file-name' or is nil.
 The return value has the form (NAME . ADDRESS)."
   (elx-with-file file
-    (let ((adapter (elx-header "adapted-by")))
-      (when adapter
-	(elx-crack-address adapter)))))
+    (elx-crack-address (or (elx-header "adapted-by") ""))))
 
 (provide 'elx)
 ;;; elx.el ends here
